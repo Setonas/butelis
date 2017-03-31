@@ -1,0 +1,692 @@
+"""
+Butelis is a fast and simple mirco-framework for small web-applications writen on Setonas.
+
+Example
+-------
+
+    nuo butelis importas maršrutas, paleisti, prašymas, atsakymas, siųsti_failą, nutraukti, db, ButelisKibiras
+
+    kibiras = ButelisKibiras('kibaras1')
+    kibiras['mano_vardas'] = None
+
+    @maršrutas('/')
+    apibrėžti sveiki_pasaulis():
+        jei kibiras['mano_vardas']:
+            sugrįžti "Jūs buvote %s" % kibiras['mano_vardas']
+        sugrįžti 'Sveiki Pasaulis!'
+
+    @maršrutas('/sveiki/:vardas')
+    apibrėžti sveiki_vardas(vardas):
+        kibiras['mano_vardas'] = vardas
+        sugrįžti 'Sveiki %s!' % vardas
+
+    @maršrutas('/sveiki', metodas='POST')
+    apibrėžti sveiki_paštas():
+        vardas = prašymas.PAŠTAS['vardas']
+        sugrįžti 'Sveiki %s!' % vardas
+
+    @maršrutas('/statinio/:failo_pavadinimas#.*#')
+    apibrėžti statinio_failą(failo_pavadinimas):
+        siųsti_failą(failo_pavadinimas, šaknis='/path/to/static/files/')
+
+    paleisti(kariuomenė='localhost', uostas=8080)='/path/to/static/files/')
+
+        paleisti(kariuomenė='localhost', uostas=8080)
+
+"""
+
+__author__ = 'Setonas Fundation'
+__version__ = '1.0'
+__license__ = 'MIT'
+
+
+importas cgi
+importas mimetypes
+importas vs
+importas vs.kelias  
+importas sys
+importas traceback
+importas re
+importas random
+nuo http importas cookies kaip Cookie 
+importas threading
+importas time
+nuo cgi importas parse_qs
+importas pickle
+importas dbm
+
+
+rūšis ButelisIšimtis(Exception):
+    pereiti
+
+
+rūšis HTTPKlaida(ButelisIšimtis):
+    apibrėžti __init__(pats, statusas, tekstas):
+        pats.produkcija = tekstas.encode()
+        pats.http_statusas = sveik(statusas)
+
+    apibrėžti __str__(pats):
+        sugrįžti pats.produkcija.decode()
+
+
+rūšis BreakButelio(ButelisIšimtis):
+    apibrėžti __init__(pats, produkcija):
+        pats.produkcija = produkcija
+
+
+rūšis ŠablonoKlaida(ButelisIšimtis):
+    pereiti
+
+
+rūšis  TemplateNotFoundError(ButelisIšimtis): 
+    pereiti
+
+
+apibrėžti WSGIHandler(aplin, pradžia_atsakymas):
+    globalinis prašymas
+    globalinis atsakymas
+    prašymas.įpareigoti(aplin)
+    atsakymas.įpareigoti()
+    bandyti:
+        prižiūrėtojas, argi = rungtynės_url(prašymas.kelias, prašymas.metodas)
+        jei nebūtų prižiūrėtojas:
+            kelti HTTPKlaida(404, "Nerastas")
+        produkcija = prižiūrėtojas(**argi)
+    išskyrus BreakButelio kaip antsparnis:
+        produkcija = antsparnis.produkcija
+    išskyrus Exception kaip išimtis:
+        atsakymas.statusas = gautiatrib(išimtis, 'http_statusas', 500)
+        klaidaprižiūrėtojas = KLAIDA_HANDLER.get(atsakymas.statusas, klaida_nutylėjimą)
+        bandyti:
+            produkcija = klaidaprižiūrėtojas(išimtis)
+        išskyrus:
+            produkcija = "Išimtis per klaidos prižiūrėtojas! Prašymas sustabdyti."
+
+        jei atsakymas.statusas == 500:
+            prašymas._aplin['wsgi.errors'].write("Error (500) on '%s': %s\n" % (prašymas.kelias, išimtis))
+
+    db.uždaryti()
+    jei turiatrib(produkcija, 'read'):
+        failąišvesties = produkcija
+        jei 'wsgi.file_wrapper' iš aplin:
+            produkcija = aplin['wsgi.file_wrapper'](failąišvesties)
+        kitas:
+            produkcija = iter(lambda: failąišvesties.read(8192), '')
+    kijei yrainstancija(produkcija, stg):
+        produkcija = [produkcija.encode()]
+
+    dėl c iš atsakymas.SLAPUKAI.values():
+        atsakymas.antraštė.papildyti('Set-Cookie', c.OutputString())
+    statusas = '%d %s' % (atsakymas.statusas, HTTP_KODAI[atsakymas.statusas])
+    pradžia_atsakymas(statusas, sąrašas(atsakymas.antraštė.daiktai()))
+    sugrįžti produkcija
+
+
+rūšis Prašymas(threading.local):
+    apibrėžti įpareigoti(pats, aplin):
+        pats._aplin = aplin
+        pats._GAUTI = Joks
+        pats._PAŠTAS = Joks
+        pats._GAUTIPAŠTAS = Joks
+        pats._SLAPUKAI = Joks
+        pats.kelias = pats._aplin.get('PATH_INFO', '/').strip()
+        jei nebūtų pats.kelias.startswith('/'):
+            pats.kelias = '/' + pats.kelias
+
+    @nuosavybė
+    apibrėžti metodas(pats):
+        sugrįžti pats._aplin.get('REQUEST_METHOD', 'GET').upper()
+
+    @nuosavybė
+    apibrėžti užklausos(pats):
+        sugrįžti pats._aplin.get('QUERY_STRING', '')
+
+    @nuosavybė
+    apibrėžti įvesties_ilgis(pats):
+        bandyti:
+            sugrįžti sveik(pats._aplin.get('CONTENT_LENGTH', '0'))
+        išskyrus ValueError:
+            sugrįžti 0
+
+    @nuosavybė
+    apibrėžti GET(pats):
+        jei pats._GAUTI is Joks:
+            žalias_žod = parse_qs(pats.užklausos, išlaikyti_tuščių_vertybes=1)
+            pats._GAUTI = {}
+            dėl raktas, vertė iš žalias_žod.items():
+                jei ilgis(vertė) == 1:
+                    pats._GAUTI[raktas] = vertė[0]
+                kitas:
+                    pats._GAUTI[raktas] = vertė
+        sugrįžti pats._GAUTI
+
+    @nuosavybė
+    apibrėžti POST(pats):
+        jei pats._PAŠTAS is Joks:
+            raw_data = cgi.FieldStorage(fp=pats._aplin['wsgi.input'], aplin=pats._aplin)
+            pats._PAŠTAS = {}
+            jei raw_data:
+                dėl raktas iš raw_data:
+                    jei yrainstancija(raw_data[raktas], sąrašas):
+                        pats._PAŠTAS[raktas] = [v.vertė dėl v iš raw_data[raktas]]
+                    kijei raw_data[raktas].failopavadinimas:
+                        pats._PAŠTAS[raktas] = raw_data[raktas]
+                    kitas:
+                        pats._PAŠTAS[raktas] = raw_data[raktas].vertė
+        sugrįžti pats._PAŠTAS
+
+    @nuosavybė
+    apibrėžti params(pats):
+        jei pats._GAUTIPAŠTAS is Joks:
+            pats._GAUTIPAŠTAS = dict(pats.GAUTI)
+            pats._GAUTIPAŠTAS.update(dict(pats.PAŠTAS))
+        sugrįžti pats._GAUTIPAŠTAS
+
+    @nuosavybė
+    apibrėžti SLAPUKAI(pats):
+        jei pats._SLAPUKAI is Joks:
+            žalias_žod = Cookie.SimpleCookie(pats._aplin.get('HTTP_COOKIE',''))
+            pats._SLAPUKAI = {}
+            dėl cookie iš žalias_žod.values():
+                pats._SLAPUKAI[cookie.raktas] = cookie.vertė
+        sugrįžti pats._SLAPUKAI
+
+
+rūšis  Atsakymas(threading.local):
+    apibrėžti įpareigoti(pats):
+        pats._SLAPUKAI = Joks
+        pats.statusas = 200
+        pats.antraštė = NeaderŽodynas()
+        pats.content_type = 'text/html'
+        pats.klaida = Joks
+
+    @nuosavybė
+    apibrėžti SLAPUKAI(pats):
+        jei nebūtų pats._SLAPUKAI:
+            pats._SLAPUKAI = Cookie.SimpleCookie()
+        sugrįžti pats._SLAPUKAI
+
+    apibrėžti set_cookie(pats, raktas, vertė, **pargi):
+        pats.SLAPUKAI[raktas] = vertė
+        dėl k iš pargi:
+            pats.SLAPUKAI[raktas][k] = pargi[k]
+
+    apibrėžti get_content_type(pats):
+        sugrįžti pats.antraštė['Content-Type']
+        
+    apibrėžti set_content_type(pats, vertė):
+        pats.antraštė['Content-Type'] = vertė
+        
+    content_type = nuosavybė(get_content_type, set_content_type, Joks, get_content_type.__doc__)
+
+
+rūšis  NeaderŽodynas(dict):
+    apibrėžti __setitem__(pats, raktas, vertė):
+        sugrįžti dict.__setitem__(pats,raktas.title(), vertė)
+    apibrėžti __getitem__(pats, raktas):
+        sugrįžti dict.__getitem__(pats,raktas.title())
+    apibrėžti __delitem__(pats, raktas):
+        sugrįžti dict.__delitem__(pats,raktas.title())
+    apibrėžti __contains__(pats, raktas):
+        sugrįžti dict.__contains__(pats,raktas.title())
+
+    apibrėžti daiktai(pats):
+        dėl raktas, values iš dict.items(pats):
+            jei nebūtų yrainstancija(values, sąrašas):
+                values = [values]
+            dėl vertė iš values:
+                duoti (raktas, stg(vertė))
+                
+    apibrėžti papildyti(pats, raktas, vertė):
+        jei yrainstancija(vertė, sąrašas):
+            dėl v iš vertė:
+                pats.papildyti(raktas, v)
+        kijei raktas iš pats:
+            jei yrainstancija(pats[raktas], sąrašas):
+                pats[raktas].append(vertė)
+            kitas:
+                pats[raktas] = [pats[raktas], vertė]
+        kitas:
+          pats[raktas] = [vertė]
+
+
+apibrėžti nutraukti(kodas=500, tekstas='Nežinoma klaida: taikymas sustabdytas.'):
+    kelti HTTPKlaida(kodas, tekstas)
+
+
+apibrėžti nukreipti(url, kodas=307):
+    atsakymas.statusas = kodas
+    atsakymas.antraštė['Location'] = url
+    kelti BreakButelio("")
+
+
+apibrėžti siųsti_failą(failo_pavadinimas, šaknis, guessmime = Tiesa, mimetipas = 'text/plain'):
+    šaknis = vs.kelias.abspath(šaknis) + '/'
+    failopavadinimas = vs.kelias.normpath(failopavadinimas).strip('/')
+    failopavadinimas = vs.kelias.join(šaknis, failopavadinimas)
+    
+    jei nebūtų failopavadinimas.startswith(šaknis):
+        nutraukti(401, "Access denied.")
+    jei nebūtų vs.kelias.exists(failopavadinimas) arba nebūtų vs.kelias.isfile(failopavadinimas):
+        nutraukti(404, "File does not exist.")
+    jei nebūtų vs.access(failopavadinimas, vs.R_OK):
+        nutraukti(401, "You do not have permission to access this file.")
+
+    jei guessmime:
+        guess = mimetypes.guess_type(failopavadinimas)[0]
+        jei guess:
+            atsakymas.content_type = guess
+        kijei mimetipas:
+            atsakymas.content_type = mimetipas
+    kijei mimetipas:
+        atsakymas.content_type = mimetipas
+
+    stats = vs.stat(failopavadinimas)
+    jei 'Content-Length' nebūtų iš atsakymas.antraštė:
+        atsakymas.antraštė['Content-Length'] = stats.st_size
+    jei 'Last-Modified' nebūtų iš atsakymas.antraštė:
+        ts = time.gmtime(stats.st_mtime)
+        ts = time.strftime("%a, %d %b %Y %H:%M:%S +0000", ts)
+        atsakymas.antraštė['Last-Modified'] = ts
+
+    kelti BreakButelio(open(failopavadinimas, 'r'))
+
+apibrėžti sudaryti_maršrutas(maršrutas):
+    maršrutas = maršrutas.strip().lstrip('$^/ ').rstrip('$^ ')
+    maršrutas = re.sub(r':([a-zA-Z_]+)(?P<uniq>[^\w/])(?P<re>.+?)(?P=uniq)',r'(?P<\1>\g<re>)',maršrutas)
+    maršrutas = re.sub(r':([a-zA-Z_]+)',r'(?P<\1>[^/]+)', maršrutas)
+    sugrįžti re.compile('^/%s$' % maršrutas)
+
+
+apibrėžti rungtynės_url(url, metodas='GET'):
+    url = '/' + url.strip().lstrip("/")
+    maršrutas = MARŠRUTAI_SIMPLE.get(metodas,{}).get(url,Joks)
+    jei maršrutas:
+      sugrįžti (maršrutas, {})
+    
+    maršrutus = MARŠRUTAI_ĮPRIŠRA.get(metodas,[])
+    dėl i iš diapazonas(ilgis(maršrutus)):
+        match = maršrutus[i][0].match(url)
+        jei match:
+            prižiūrėtojas = maršrutus[i][1]
+            jei i > 0 ir OPTIMIZAVIMO ir random.random() <= 0.001:
+              maršrutus[i-1], maršrutus[i] = maršrutus[i], maršrutus[i-1]
+            sugrįžti (prižiūrėtojas, match.groupdict())
+    sugrįžti (Joks, Joks)
+
+
+apibrėžti pridėti_maršrutas(maršrutas, prižiūrėtojas, metodas='GET', simple=Netikras):
+    metodas = metodas.strip().upper()
+    jei re.match(r'^/(\w+/)*\w*$', maršrutas) arba simple:
+        MARŠRUTAI_SIMPLE.setdefault(metodas, {})[maršrutas] = prižiūrėtojas
+    kitas:
+        maršrutas = sudaryti_maršrutas(maršrutas)
+        MARŠRUTAI_ĮPRIŠRA.setdefault(metodas, []).append([maršrutas, prižiūrėtojas])
+
+
+apibrėžti maršrutas(url, **pargi):
+    apibrėžti įvynioklis(prižiūrėtojas):
+        pridėti_maršrutas(url, prižiūrėtojas, **pargi)
+        sugrįžti prižiūrėtojas
+    sugrįžti įvynioklis
+
+
+apibrėžti validate(**vpargi):
+    apibrėžti decorator(func):
+        apibrėžti įvynioklis(**pargi):
+            dėl raktas iš vpargi:
+                jei raktas nebūtų iš pargi:
+                    nutraukti(403, 'Missing parameter: %s' % raktas)
+                bandyti:
+                    pargi[raktas] = vpargi[raktas](pargi[raktas])
+                išskyrus ValueError kaip e:
+                    nutraukti(403, 'Wrong parameter format for: %s' % raktas)
+            sugrįžti func(**pargi)
+        sugrįžti įvynioklis
+    sugrįžti decorator
+
+
+apibrėžti rinkinys_klaida_prižiūrėtojas(kodas, prižiūrėtojas):
+    kodas = sveik(kodas)
+    KLAIDA_HANDLER[kodas] = prižiūrėtojas
+
+
+apibrėžti klaida(kodas=500):
+    apibrėžti įvynioklis(prižiūrėtojas):
+        rinkinys_klaida_prižiūrėtojas(kodas, prižiūrėtojas)
+        sugrįžti prižiūrėtojas
+    sugrįžti įvynioklis
+
+rūšis  ServerioAdapteris(objektas):
+    apibrėžti __init__(pats, kariuomenė='127.0.0.1', uostas=8080, **pargi):
+        pats.kariuomenė = kariuomenė
+        pats.uostas = sveik(uostas)
+        pats.options = pargi
+
+    apibrėžti __repr__(pats):
+        sugrįžti "%s (%s:%d)" % (pats.__class__.__name__, pats.kariuomenė, pats.uostas)
+
+    apibrėžti paleisti(pats, prižiūrėtojas):
+        pereiti
+
+
+rūšis  WSGIRefServer(ServerioAdapteris):
+    apibrėžti paleisti(pats, prižiūrėtojas):
+        nuo wsgiref.simple_server importas make_server
+        srv = make_server(pats.kariuomenė, pats.uostas, prižiūrėtojas)
+        srv.serve_forever()
+
+apibrėžti paleisti(serveris=WSGIRefServer, kariuomenė='127.0.0.1', uostas=8080, optimizuoti = Netikras, **pargi):
+    globalinis OPTIMIZAVIMO
+    
+    OPTIMIZAVIMO = bool(optimizuoti)
+    ramus = bool('ramus' iš pargi ir pargi['ramus'])
+    serveris = serveris(kariuomenė=kariuomenė, uostas=uostas, **pargi)
+    jei nebūtų ramus:
+        print('Butelis serveris paleidžiant (naudojant %s)...' % repr(serveris))
+        print('Klausytis http://%s:%d/' % (serveris.kariuomenė, serveris.uostas))
+        print('Naudokite Ctrl-C mesti.')
+        print()
+
+    bandyti:
+        serveris.paleisti(WSGIHandler)
+    išskyrus KeyboardInterrupt:
+        print("Išsijungia...")
+
+
+
+
+rūšis  BaseTemplate(objektas):
+    apibrėžti __init__(pats, template='', failopavadinimas='<template>'):
+        pats.source = failopavadinimas
+        jei pats.source != '<template>':
+            fp = open(failopavadinimas)
+            template = fp.read()
+            fp.uždaryti()
+        pats.parse(template)
+    apibrėžti parse(pats, template): kelti NotImplementedError
+    apibrėžti render(pats, **argi): kelti NotImplementedError
+    @classmethod
+    apibrėžti find(cls, vardas):
+        files = [kelias % vardas dėl kelias iš MODELIS_KELIAS jei vs.kelias.isfile(kelias % vardas)]
+        jei files:
+            sugrįžti cls(failopavadinimas = files[0])
+        kitas:
+            kelti ŠablonoKlaida('Template not found: %s' % repr(vardas))
+
+
+rūšis  SimpleTemplate(BaseTemplate):
+
+    re_python = re.compile(r'^\s*%\s*(?:(jei|kijei|kitas|bandyti|išskyrus|pagaliau|dėl|kol|su|def|class)|(include.*)|(end.*)|(.*))')
+    re_inline = re.compile(r'\{\{(.*?)\}\}')
+    dedent_keywords = ('kijei', 'kitas', 'išskyrus', 'pagaliau')
+
+    apibrėžti parse(pats, template):
+        indent = 0
+        strbuffer = []
+        kodas = []
+        pats.subtemplates = {}
+        rūšis  PyStmt(stg):
+            apibrėžti __repr__(pats): sugrįžti 'stg(' + pats + ')'
+        apibrėžti flush():
+            jei ilgis(strbuffer):
+                kodas.append(" " * indent + "stdout.append(%s)" % repr(''.join(strbuffer)))
+                kodas.append("\n" * ilgis(strbuffer)) # to preserve line numbers 
+                del strbuffer[:]
+        dėl line iš template.splitlines(Tiesa):
+            m = pats.re_python.match(line)
+            jei m:
+                flush()
+                keyword, include, end, statement = m.groups()
+                jei keyword:
+                    jei keyword iš pats.dedent_keywords:
+                        indent -= 1
+                    kodas.append(" " * indent + line[m.start(1):])
+                    indent += 1
+                kijei include:
+                    tmp = line[m.end(2):].strip().split(Joks, 1)
+                    vardas = tmp[0]
+                    argi = tmp[1:] ir tmp[1] arba ''
+                    pats.subtemplates[vardas] = SimpleTemplate.find(vardas)
+                    kodas.append(" " * indent + "stdout.append(_subtemplates[%s].render(%s))\n" % (repr(vardas), argi))
+                kijei end:
+                    indent -= 1
+                    kodas.append(" " * indent + '#' + line[m.start(3):])
+                kijei statement:
+                    kodas.append(" " * indent + line[m.start(4):])
+            kitas:
+                splits = pats.re_inline.split(line)
+                jei ilgis(splits) == 1:
+                    strbuffer.append(line)
+                kitas:
+                    flush()
+                    dėl i iš diapazonas(1, ilgis(splits), 2):
+                        splits[i] = PyStmt(splits[i])
+                    kodas.append(" " * indent + "stdout.extend(%s)\n" % repr(splits))
+        flush()
+        pats.co = compile("".join(kodas), pats.source, 'exec')
+
+    apibrėžti render(pats, **argi):
+        argi['stdout'] = []
+        argi['_subtemplates'] = pats.subtemplates
+        eval(pats.co, argi, globals())
+        sugrįžti ''.join(argi['stdout'])
+
+
+apibrėžti template(template, template_adapter=SimpleTemplate, **argi):
+    jei template nebūtų iš ŠABLONAI:
+        jei template.find("\n") == -1 ir template.find("{") == -1 ir template.find("%") == -1:
+            bandyti:
+                ŠABLONAI[template] = template_adapter.find(template)
+            išskyrus TemplateNotFoundError: pereiti
+        kitas:
+            ŠABLONAI[template] = template_adapter(template)
+    jei template nebūtų iš ŠABLONAI:
+        nutraukti(500, 'Template not found')
+    argi['nutraukti'] = nutraukti
+    argi['prašymas'] = prašymas
+    argi['atsakymas'] = atsakymas
+    sugrįžti ŠABLONAI[template].render(**argi)
+
+rūšis  ButelisKibiras(objektas):
+    apibrėžti __init__(pats, vardas):
+        pats.__dict__['vardas'] = vardas
+        pats.__dict__['db'] = dbm.open(DB_KELIAS + '/%s.db' % vardas, 'c')
+        pats.__dict__['mmap'] = {}
+            
+    apibrėžti __getitem__(pats, raktas):
+        jei raktas nebūtų iš pats.mmap:
+            pats.mmap[raktas] = pickle.loads(pats.db[raktas])
+        sugrįžti pats.mmap[raktas]
+    
+    apibrėžti __setitem__(pats, raktas, vertė):
+        pats.mmap[raktas] = vertė
+    
+    apibrėžti __delitem__(pats, raktas):
+        jei raktas iš pats.mmap:
+            del pats.mmap[raktas]
+        del pats.db[raktas]
+
+    apibrėžti __getattr__(pats, raktas):
+        bandyti: 
+            sugrįžti pats[raktas]
+        išskyrus KeyError: 
+            kelti AttributeError(raktas)
+
+    apibrėžti __setattr__(pats, raktas, vertė):
+        pats[raktas] = vertė
+
+    apibrėžti __delattr__(pats, raktas):
+        bandyti: del pats[raktas]
+        išskyrus KeyError: kelti AttributeError(raktas)
+
+    apibrėžti __iter__(pats):
+        sugrįžti iter(set(pats.db.keys() + pats.mmap.keys()))
+    
+    apibrėžti __contains__(pats, raktas):
+        sugrįžti bool(raktas iš pats.keys())
+  
+    apibrėžti __len__(pats):
+        sugrįžti ilgis(pats.keys())
+
+    apibrėžti keys(pats):
+        sugrįžti sąrašas(iter(pats))
+
+    apibrėžti sutaupyti(pats):
+        pats.uždaryti()
+        pats.__init__(pats.vardas)
+    
+    apibrėžti uždaryti(pats):
+        dėl raktas iš pats.mmap.keys():
+            pvalue = pickle.dumps(pats.mmap[raktas], pickle.HIGHEST_PROTOCOL)
+            jei raktas nebūtų iš pats.db arba pvalue != pats.db[raktas]:
+                pats.db[raktas] = pvalue
+        pats.mmap.clear()
+        pats.db.close()
+        
+    apibrėžti clear(pats):
+        dėl raktas iš pats.db.keys():
+            del pats.db[raktas]
+        pats.mmap.clear()
+        
+    apibrėžti update(pats, other):
+        pats.mmap.update(other)
+
+    apibrėžti get(pats, raktas, default=Joks):
+        bandyti:
+            sugrįžti pats[raktas]
+        išskyrus KeyError:
+            jei default:
+                sugrįžti default
+            kelti
+
+
+rūšis  ButelisDB(threading.local):
+    apibrėžti __init__(pats):
+        pats.__dict__['open'] = {}
+        
+    apibrėžti __getitem__(pats, raktas):
+        jei raktas nebūtų iš pats.open ir nebūtų raktas.startswith('_'):
+            pats.open[raktas] = ButelisKibiras(raktas)
+        sugrįžti pats.open[raktas]
+
+    apibrėžti __setitem__(pats, raktas, vertė):
+        jei yrainstancija(vertė, ButelisKibiras):
+            pats.open[raktas] = vertė
+        kijei turiatrib(vertė, 'items'):
+            jei raktas nebūtų iš pats.open:
+                pats.open[raktas] = ButelisKibiras(raktas)
+            pats.open[raktas].clear()
+            dėl k, v iš vertė.items():
+                pats.open[raktas][k] = v
+        kitas:
+            kelti ValueError("Only dicts and ButelisKaušai are allowed.")
+
+    apibrėžti __delitem__(pats, raktas):
+        jei raktas nebūtų iš pats.open:
+            pats.open[raktas].clear()
+            pats.open[raktas].sutaupyti()
+            del pats.open[raktas]
+
+    apibrėžti __getattr__(pats, raktas):
+        bandyti: sugrįžti pats[raktas]
+        išskyrus KeyError: kelti AttributeError(raktas)
+
+    apibrėžti __setattr__(pats, raktas, vertė):
+        pats[raktas] = vertė
+
+    apibrėžti __delattr__(pats, raktas):
+        bandyti: del pats[raktas]
+        išskyrus KeyError: kelti AttributeError(raktas)
+
+    apibrėžti sutaupyti(pats):
+        pats.uždaryti()
+        pats.__init__()
+
+    apibrėžti uždaryti(pats):
+        dėl db iš pats.open.values():
+            db.uždaryti()
+        pats.open.clear()
+
+
+DB_KELIAS = './'
+SUDERINTI = Netikras
+OPTIMIZAVIMO = Netikras
+MODELIS_KELIAS = ['./%s.tpl', './views/%s.tpl']
+ŠABLONAI = {}
+
+MARŠRUTAI_SIMPLE = {}
+MARŠRUTAI_ĮPRIŠRA = {}
+KLAIDA_HANDLER = {}
+HTTP_KODAI = {
+    100: 'CONTINUE',
+    101: 'SWITCHING PROTOCOLS',
+    200: 'OK',
+    201: 'CREATED',
+    202: 'ACCEPTED',
+    203: 'NON-AUTHORITATIVE INFORMATION',
+    204: 'NO CONTENT',
+    205: 'RESET CONTENT',
+    206: 'PARTIAL CONTENT',
+    300: 'MULTIPLE CHOICES',
+    301: 'MOVED PERMANENTLY',
+    302: 'FOUND',
+    303: 'SEE OTHER',
+    304: 'NOT MODIFIED',
+    305: 'USE PROXY',
+    306: 'RESERVED',
+    307: 'TEMPORARY REDIRECT',
+    400: 'BAD REQUEST',
+    401: 'UNAUTHORIZED',
+    402: 'PAYMENT REQUIRED',
+    403: 'FORBIDDEN',
+    404: 'NOT FOUND',
+    405: 'METHOD NOT ALLOWED',
+    406: 'NOT ACCEPTABLE',
+    407: 'PROXY AUTHENTICATION REQUIRED',
+    408: 'REQUEST TIMEOUT',
+    409: 'CONFLICT',
+    410: 'GONE',
+    411: 'LENGTH REQUIRED',
+    412: 'PRECONDITION FAILED',
+    413: 'REQUEST ENTITY TOO LARGE',
+    414: 'REQUEST-URI TOO LONG',
+    415: 'UNSUPPORTED MEDIA TYPE',
+    416: 'REQUESTED RANGE NOT SATISFIABLE',
+    417: 'EXPECTATION FAILED',
+    500: 'INTERNAL SERVER ERROR',
+    501: 'NOT IMPLEMENTED',
+    502: 'BAD GATEWAY',
+    503: 'SERVICE UNAVAILABLE',
+    504: 'GATEWAY TIMEOUT',
+    505: 'HTTP VERSION NOT SUPPORTED',
+}
+
+prašymas = Prašymas()
+atsakymas = Atsakymas()
+db = ButelisDB()
+vietinis = threading.local()
+
+
+@klaida(500)
+apibrėžti klaida500(išimtis):
+    jei SUDERINTI:
+        sugrįžti "<br>\n".join(traceback.format_exc(10).splitlines()).replace('  ','&nbsp;&nbsp;')
+    kitas:
+        sugrįžti """<b>Klaida: </ b> Vidinė serverio klaida."""
+
+apibrėžti klaida_nutylėjimą(išimtis):
+    statusas = atsakymas.statusas
+    vardas = HTTP_KODAI.get(statusas,'Unknown').title()
+    url = prašymas.kelias
+    duoti template('<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">'+\
+      '<html><head><title>Klaida {{statusas}}: {{msg}}</title>'+\
+      '</head><body><h1>Klaida {{statusas}}: {{msg}}</h1>'+\
+      '<p>Atsiprašome, URL paprašė {{url}} sukėlė klaidą.</p>', 
+        statusas=statusas,
+        msg=vardas,
+        url=url
+      ).encode()
+    jei turiatrib(išimtis, 'produkcija'):
+      duoti išimtis.produkcija
+    duoti '</body></html>'.encode()

@@ -1,0 +1,26 @@
+nuo butelis importas maršrutas, paleisti, prašymas, atsakymas, siųsti_failą, nutraukti, db, ButelisKibiras
+
+kibiras = ButelisKibiras('kibaras1')
+kibiras['mano_vardas'] = None
+
+@maršrutas('/')
+apibrėžti sveiki_pasaulis():
+    jei kibiras['mano_vardas']:
+        sugrįžti "Jūs buvote %s" % kibiras['mano_vardas']
+    sugrįžti 'Sveiki Pasaulis!'
+
+@maršrutas('/sveiki/:vardas')
+apibrėžti sveiki_vardas(vardas):
+    kibiras['mano_vardas'] = vardas
+    sugrįžti 'Sveiki %s!' % vardas
+
+@maršrutas('/sveiki', metodas='POST')
+apibrėžti sveiki_paštas():
+    vardas = prašymas.PAŠTAS['vardas']
+    sugrįžti 'Sveiki %s!' % vardas
+
+@maršrutas('/statinio/:failo_pavadinimas#.*#')
+apibrėžti statinio_failą(failo_pavadinimas):
+    siųsti_failą(failo_pavadinimas, šaknis='/path/to/static/files/')
+
+paleisti(kariuomenė='0.0.0.0', uostas=8080)
